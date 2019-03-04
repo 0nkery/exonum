@@ -62,12 +62,12 @@ pub struct WalletInfo {
 }
 
 /// Transaction hash and block height at which it's been committed.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct SimpleTransactionInfo {
     /// Transaction's hash.
-    hash: Hash,
+    pub hash: Hash,
     /// Transaction's block height.
-    height: Height,
+    pub height: Height,
 }
 
 /// Simplified wallet information.

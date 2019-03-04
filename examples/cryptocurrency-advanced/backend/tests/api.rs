@@ -22,15 +22,19 @@
 extern crate serde_json;
 
 use exonum::{
-    api::node::public::explorer::{TransactionQuery, TransactionResponse},
+    api::{
+        self,
+        node::public::explorer::{TransactionQuery, TransactionResponse},
+    },
     crypto::{self, Hash, PublicKey, SecretKey},
+    helpers::Height,
     messages::{self, RawTransaction, Signed},
 };
 use exonum_testkit::{ApiKind, TestKit, TestKitApi, TestKitBuilder};
 
 // Import data types used in tests from the crate where the service is defined.
 use exonum_cryptocurrency_advanced::{
-    api::{WalletInfo, WalletQuery},
+    api::{SimpleTransactionInfo, SimpleWalletInfo, WalletInfo, WalletQuery},
     transactions::{CreateWallet, Transfer},
     wallet::Wallet,
     Service,
@@ -202,6 +206,77 @@ fn test_unknown_wallet_request() {
     api.assert_no_wallet(tx.author());
 }
 
+#[test]
+fn test_simple_wallet_info() {
+    let (mut testkit, api) = create_testkit();
+
+    // Create 2 wallets.
+    let (tx_alice, key_alice) = api.create_wallet(ALICE_NAME);
+    let (tx_bob, _key_bob) = api.create_wallet(BOB_NAME);
+    testkit.create_block();
+    api.assert_tx_status(tx_alice.hash(), &json!({ "type": "success" }));
+    api.assert_tx_status(tx_bob.hash(), &json!({ "type": "success" }));
+
+    // Check that the initial Alice's and Bob's balances persisted by the service.
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+
+    // Transfer funds by invoking the corresponding API method.
+    let tx = Transfer::sign(
+        &tx_alice.author(),
+        &tx_bob.author(),
+        10, // transferred amount
+        0,  // seed
+        &key_alice,
+    );
+    api.transfer(&tx);
+    testkit.create_block();
+    api.assert_tx_status(tx.hash(), &json!({ "type": "success" }));
+
+    let response = api.simple_wallet_info(tx_alice.author()).unwrap();
+
+    assert_eq!(
+        vec![
+            SimpleTransactionInfo {
+                hash: tx_alice.hash(),
+                height: Height(1),
+            },
+            SimpleTransactionInfo {
+                hash: tx.hash(),
+                height: Height(2),
+            }
+        ],
+        response.transactions
+    );
+
+    let response = api.simple_wallet_info(tx_bob.author()).unwrap();
+
+    assert_eq!(
+        vec![
+            SimpleTransactionInfo {
+                hash: tx_bob.hash(),
+                height: Height(1),
+            },
+            SimpleTransactionInfo {
+                hash: tx.hash(),
+                height: Height(2),
+            }
+        ],
+        response.transactions
+    );
+}
+
+#[test]
+fn test_simple_wallet_info_on_unknown_public_key() {
+    let (_testkit, api) = create_testkit();
+    let (public_key, _private_key) = exonum_crypto::gen_keypair();
+    let response = api.simple_wallet_info(public_key);
+
+    assert!(response.is_err());
+}
+
 /// Wrapper for the cryptocurrency service API allowing to easily use it
 /// (compared to `TestKitApi` calls).
 struct CryptocurrencyApi {
@@ -244,7 +319,15 @@ impl CryptocurrencyApi {
             .find(|(ref k, _)| **k == pub_key)
             .and_then(|tuple| tuple.1)
             .cloned();
+
         wallet
+    }
+
+    fn simple_wallet_info(&self, pub_key: PublicKey) -> api::Result<SimpleWalletInfo> {
+        self.inner
+            .public(ApiKind::Service("cryptocurrency"))
+            .query(&WalletQuery { pub_key })
+            .get::<SimpleWalletInfo>("v1/wallets/info/simple")
     }
 
     /// Sends a transfer transaction over HTTP and checks the synchronous result.
