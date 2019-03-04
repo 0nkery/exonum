@@ -18,7 +18,7 @@ use exonum::{
     api::{self, ServiceApiBuilder, ServiceApiState},
     blockchain::{self, BlockProof, TransactionMessage},
     crypto::{Hash, PublicKey},
-    explorer::BlockchainExplorer,
+    explorer::{BlockchainExplorer, TransactionInfo},
     helpers::Height,
     storage::{ListProof, MapProof},
 };
@@ -59,6 +59,22 @@ pub struct WalletInfo {
     pub wallet_proof: WalletProof,
     /// History of the appropriate wallet.
     pub wallet_history: Option<WalletHistory>,
+}
+
+/// Transaction hash and block height at which it's been committed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SimpleTransactionInfo {
+    /// Transaction's hash.
+    hash: Hash,
+    /// Transaction's block height.
+    height: Height,
+}
+
+/// Simplified wallet information.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SimpleWalletInfo {
+    /// List of transactions for a given wallet.
+    pub transactions: Vec<SimpleTransactionInfo>,
 }
 
 /// Public service API description.
@@ -115,10 +131,46 @@ impl PublicApi {
         })
     }
 
+    /// Endpoint for getting a list of transaction hashes and block height at
+    /// which they've been committed for a single wallet identified by public
+    /// key.
+    pub fn simple_wallet_info(
+        state: &ServiceApiState,
+        query: WalletQuery,
+    ) -> api::Result<SimpleWalletInfo> {
+        let snapshot = state.snapshot();
+        let currency_schema = Schema::new(&snapshot);
+
+        // Check if wallet exists.
+        let _wallet = currency_schema.wallet(&query.pub_key).ok_or_else(|| {
+            api::error::Error::NotFound(format!(
+                "Wallet with public key = {} is not found",
+                query.pub_key
+            ))
+        })?;
+
+        let explorer = BlockchainExplorer::new(state.blockchain());
+
+        let history = currency_schema.wallet_history(&query.pub_key);
+        let transactions = history
+            .iter()
+            .filter_map(|hash| match explorer.transaction(&hash) {
+                Some(TransactionInfo::Committed(transaction)) => Some(SimpleTransactionInfo {
+                    height: transaction.location().block_height(),
+                    hash,
+                }),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        Ok(SimpleWalletInfo { transactions })
+    }
+
     /// Wires the above endpoint to public scope of the given `ServiceApiBuilder`.
     pub fn wire(builder: &mut ServiceApiBuilder) {
         builder
             .public_scope()
-            .endpoint("v1/wallets/info", Self::wallet_info);
+            .endpoint("v1/wallets/info", Self::wallet_info)
+            .endpoint("v1/wallets/info/simple", Self::simple_wallet_info);
     }
 }
