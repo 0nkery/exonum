@@ -46,6 +46,11 @@ message ApproveTransferMultisig {
   exonum.Hash tx_hash = 1;
 }
 
+/// Reject multisignature transfer.
+message RejectTransferMultisig {
+  exonum.Hash tx_hash = 1;
+}
+
 // Issue `amount` of the currency to the `wallet`.
 message Issue {
   // Issued amount of currency.

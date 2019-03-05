@@ -143,6 +143,13 @@ pub struct ApproveTransferMultisig {
     tx_hash: Hash,
 }
 
+/// Reject multisignature transfer.
+#[derive(Debug, Clone, ProtobufConvert)]
+#[exonum(pb = "proto::RejectTransferMultisig", serde_pb_convert)]
+pub struct RejectTransferMultisig {
+    tx_hash: Hash,
+}
+
 /// Issue `amount` of the currency to the `wallet`.
 #[derive(Serialize, Deserialize, Clone, Debug, ProtobufConvert)]
 #[exonum(pb = "proto::Issue")]
@@ -176,6 +183,8 @@ pub enum WalletTransactions {
     TransferMultisig(TransferMultisig),
     /// ApproveTransferMultisig tx.
     ApproveTransferMultisig(ApproveTransferMultisig),
+    /// RejectTransferMultisig tx.
+    RejectTransferMultisig(RejectTransferMultisig),
 }
 
 impl CreateWallet {
@@ -236,6 +245,13 @@ impl TransferMultisig {
 }
 
 impl ApproveTransferMultisig {
+    #[doc(hidden)]
+    pub fn sign(pk: PublicKey, sk: &SecretKey, tx_hash: Hash) -> Signed<RawTransaction> {
+        Message::sign_transaction(Self { tx_hash }, CRYPTOCURRENCY_SERVICE_ID, pk, sk)
+    }
+}
+
+impl RejectTransferMultisig {
     #[doc(hidden)]
     pub fn sign(pk: PublicKey, sk: &SecretKey, tx_hash: Hash) -> Signed<RawTransaction> {
         Message::sign_transaction(Self { tx_hash }, CRYPTOCURRENCY_SERVICE_ID, pk, sk)
@@ -417,6 +433,77 @@ impl Transaction for ApproveTransferMultisig {
         } else {
             schema.update_transfer_multisig(wallet, approved_transfer, tx_hash);
         }
+
+        Ok(())
+    }
+}
+
+impl Transaction for RejectTransferMultisig {
+    fn execute(&self, mut context: TransactionContext) -> ExecutionResult {
+        use exonum::blockchain::TransactionSet;
+
+        let (original_transfer, original_author) = {
+            let blockchain = blockchain::Schema::new(context.fork());
+
+            // Proof (in a sense) that tx was successful.
+            let _tx_was_successful = blockchain
+                .transaction_results()
+                .get(&self.tx_hash)
+                .ok_or(Error::TransactionDoesNotExist)?
+                .0
+                .map_err(|_err| Error::ReferredTransactionFailed)?;
+
+            let signed = blockchain
+                .transactions()
+                .get(&self.tx_hash)
+                .ok_or(Error::TransactionDoesNotExist)?;
+
+            let raw_tx = signed.payload().clone();
+
+            let tx = WalletTransactions::tx_from_raw(raw_tx)
+                .map_err(|_err| Error::ReferredTransactionIsNotTransferMultisig)?;
+
+            match tx {
+                WalletTransactions::TransferMultisig(tx) => (tx, signed.author()),
+                _ => return Err(Error::ReferredTransactionIsNotTransferMultisig.into()),
+            }
+        };
+
+        let approver = context.author();
+
+        // Check if approver is eligible to approve the transfer.
+        original_transfer
+            .approvers
+            .iter()
+            .find(|a| **a == approver)
+            .ok_or(Error::ApproverIsNotOnApproversList)?;
+
+        let tx_hash = context.tx_hash();
+
+        let mut schema = Schema::new(context.fork());
+
+        let sender = schema
+            .wallet(&original_author)
+            .ok_or(Error::SenderNotFound)?;
+
+        let receiver = schema
+            .wallet(&original_transfer.to)
+            // Highly unlikely (read as impossible) scenario but...
+            .ok_or(Error::ReceiverNotFound)?;
+
+        let transfer_in_question = receiver
+            .pending_multisig_transfers
+            .iter()
+            .find(|t| t.tx_hash == self.tx_hash)
+            // The transfer has been processed already or
+            // some logic bug has happened earlier.
+            .ok_or(Error::TransactionDoesNotExist)?
+            .clone();
+
+        // If all is well then return money to sender and remove pending transfer
+        // from receiver.
+        schema.increase_wallet_balance(sender, original_transfer.amount, &tx_hash);
+        schema.cancel_transfer_multisig(receiver, transfer_in_question, tx_hash);
 
         Ok(())
     }

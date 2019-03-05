@@ -180,4 +180,24 @@ impl<'a> Schema<&'a mut Fork> {
 
         self.wallets_mut().put(&pub_key, wallet);
     }
+
+    /// Cancel PendingTransferMultisig.
+    pub fn cancel_transfer_multisig(
+        &mut self,
+        wallet: Wallet,
+        transfer_multisig: PendingTransferMultisig,
+        transaction: Hash,
+    ) {
+        let wallet = {
+            let mut history = self.wallet_history_mut(&wallet.pub_key);
+            history.push(transaction);
+            let history_hash = history.merkle_root();
+
+            wallet.remove_multisig_transfer(transfer_multisig.tx_hash, history_hash)
+        };
+
+        let pub_key = wallet.pub_key;
+
+        self.wallets_mut().put(&pub_key, wallet);
+    }
 }

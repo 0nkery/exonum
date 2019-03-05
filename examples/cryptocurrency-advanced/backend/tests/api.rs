@@ -36,7 +36,8 @@ use exonum_testkit::{ApiKind, TestKit, TestKitApi, TestKitBuilder};
 use exonum_cryptocurrency_advanced::{
     api::{SimpleTransactionInfo, SimpleWalletInfo, WalletInfo, WalletQuery},
     transactions::{
-        ApproveTransferMultisig, CreateWallet, Transfer, TransferMultisig, MAX_APPROVERS,
+        ApproveTransferMultisig, CreateWallet, RejectTransferMultisig, Transfer, TransferMultisig,
+        MAX_APPROVERS,
     },
     wallet::Wallet,
     Service,
@@ -277,6 +278,10 @@ fn test_simple_wallet_info_on_unknown_public_key() {
     let response = api.simple_wallet_info(public_key);
 
     assert!(response.is_err());
+
+    if let Err(err) = response {
+        println!("{}", err);
+    }
 }
 
 /// Check that the multisignature transfer transaction works as intended.
@@ -706,6 +711,50 @@ fn test_transfer_multisig_approver_non_eligible_to_approve() {
 
     let wallet = api.get_wallet(tx_alice.author()).unwrap();
     assert_eq!(wallet.balance, 90);
+    let wallet = api.get_wallet(tx_bob.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
+}
+
+#[test]
+fn test_transfer_multisig_reject() {
+    let (mut testkit, api) = create_testkit();
+
+    let (tx_alice, key_alice) = api.create_wallet(ALICE_NAME);
+    let (tx_bob, _) = api.create_wallet(BOB_NAME);
+    testkit.create_block();
+
+    // Create approvers.
+    let (carol_public_key, carol_private_key) = exonum_crypto::gen_keypair();
+    let (dave_public_key, dave_private_key) = exonum_crypto::gen_keypair();
+
+    // Transfer funds by invoking the corresponding API method.
+    let tx = TransferMultisig::sign(
+        tx_alice.author(),
+        &key_alice,
+        tx_bob.author(),
+        [carol_public_key, dave_public_key]
+            .iter()
+            .cloned()
+            .collect(),
+        10, // transferred amount
+        0,  // seed
+    );
+    api.transaction(&tx);
+    testkit.create_block();
+
+    let tx_dave = ApproveTransferMultisig::sign(dave_public_key, &dave_private_key, tx.hash());
+    api.transaction(&tx_dave);
+    testkit.create_block();
+    api.assert_tx_status(tx_dave.hash(), &json!({ "type": "success" }));
+
+    // Carol decides to reject the transfer.
+    let tx_carol = RejectTransferMultisig::sign(carol_public_key, &carol_private_key, tx.hash());
+    api.transaction(&tx_carol);
+    testkit.create_block();
+    api.assert_tx_status(tx_carol.hash(), &json!({ "type": "success" }));
+
+    let wallet = api.get_wallet(tx_alice.author()).unwrap();
+    assert_eq!(wallet.balance, 100);
     let wallet = api.get_wallet(tx_bob.author()).unwrap();
     assert_eq!(wallet.balance, 100);
 }

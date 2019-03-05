@@ -137,7 +137,7 @@ impl Wallet {
         balance: u64,
         history_hash: Hash,
     ) -> Self {
-        self.remove_multisig_transfer(transfer_multisig.tx_hash)
+        self.remove_multisig_transfer(transfer_multisig.tx_hash, history_hash)
             .set_balance(balance, history_hash)
     }
 
@@ -147,20 +147,24 @@ impl Wallet {
         transfer_multisig: PendingTransferMultisig,
         history_hash: Hash,
     ) -> Self {
-        self.remove_multisig_transfer(transfer_multisig.tx_hash)
+        self.remove_multisig_transfer(transfer_multisig.tx_hash, history_hash)
             .put_multisig_transfer(transfer_multisig, history_hash)
     }
 
     /// Consumes and returns the wallet without pending multisignature transfer.
-    fn remove_multisig_transfer(self, transfer_multisig_hash: Hash) -> Self {
+    pub fn remove_multisig_transfer(
+        self,
+        transfer_multisig_hash: Hash,
+        history_hash: Hash,
+    ) -> Self {
         let mut pending_multisig_transfers = self.pending_multisig_transfers;
         pending_multisig_transfers.retain(|t| t.tx_hash != transfer_multisig_hash);
 
         Self {
             pending_multisig_transfers,
+            history_hash,
+            history_len: self.history_len + 1,
 
-            history_hash: self.history_hash,
-            history_len: self.history_len,
             pub_key: self.pub_key,
             name: self.name,
             balance: self.balance,
