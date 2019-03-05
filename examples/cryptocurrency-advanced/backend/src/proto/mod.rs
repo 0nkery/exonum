@@ -17,7 +17,10 @@
 #![allow(bare_trait_objects)]
 #![allow(renamed_and_removed_lints)]
 
-pub use self::cryptocurrency::{CreateWallet, Issue, Transfer, Wallet};
+pub use self::cryptocurrency::{
+    ApproveTransferMultisig, CreateWallet, Issue, PendingTransferMultisig, Transfer,
+    TransferMultisig, Wallet,
+};
 
 include!(concat!(env!("OUT_DIR"), "/protobuf_mod.rs"));
 

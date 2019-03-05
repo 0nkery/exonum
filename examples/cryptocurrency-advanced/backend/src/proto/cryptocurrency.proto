@@ -28,6 +28,24 @@ message Transfer {
   uint64 seed = 3;
 }
 
+/// Transfer 'amount' of the currency from one wallet to another
+/// after approval from all the 'approvers'.
+message TransferMultisig {
+  // `PublicKey` of receiver's wallet.
+  exonum.PublicKey to = 1;
+  // Public keys of approvers.
+  repeated exonum.PublicKey approvers = 2;
+  // Amount of currency to transfer.
+  uint64 amount = 3;
+  // Auxiliary number to guarantee non-idempotence of transactions.
+  uint64 seed = 4;
+}
+
+/// Approve multisignature transfer.
+message ApproveTransferMultisig {
+  exonum.Hash tx_hash = 1;
+}
+
 // Issue `amount` of the currency to the `wallet`.
 message Issue {
   // Issued amount of currency.
@@ -42,6 +60,13 @@ message CreateWallet {
   string name = 1;
 }
 
+// MultisignatureTransfer information stored in the database.
+message PendingTransferMultisig {
+  exonum.Hash tx_hash = 1;
+  // Public keys of approvers approved this transfer.
+  repeated exonum.PublicKey approved_by = 2;
+}
+
 // Wallet information stored in the database.
 message Wallet {
   // `PublicKey` of the wallet.
@@ -54,4 +79,6 @@ message Wallet {
   uint64 history_len = 4;
   // `Hash` of the transactions history.
   exonum.Hash history_hash = 5;
+  // List of pending multisignature transfers.
+  repeated PendingTransferMultisig pending_multisig_transfers = 6;
 }

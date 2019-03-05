@@ -19,7 +19,10 @@ use exonum::{
     storage::{Fork, ProofListIndex, ProofMapIndex, Snapshot},
 };
 
-use crate::{wallet::Wallet, INITIAL_BALANCE};
+use crate::{
+    wallet::{PendingTransferMultisig, Wallet},
+    INITIAL_BALANCE,
+};
 
 /// Database schema for the cryptocurrency.
 #[derive(Debug)]
@@ -87,7 +90,7 @@ impl<'a> Schema<&'a mut Fork> {
             history.push(*transaction);
             let history_hash = history.merkle_root();
             let balance = wallet.balance;
-            wallet.set_balance(balance + amount, &history_hash)
+            wallet.set_balance(balance + amount, history_hash)
         };
         self.wallets_mut().put(&wallet.pub_key, wallet.clone());
     }
@@ -101,7 +104,7 @@ impl<'a> Schema<&'a mut Fork> {
             history.push(*transaction);
             let history_hash = history.merkle_root();
             let balance = wallet.balance;
-            wallet.set_balance(balance - amount, &history_hash)
+            wallet.set_balance(balance - amount, history_hash)
         };
         self.wallets_mut().put(&wallet.pub_key, wallet.clone());
     }
@@ -115,5 +118,66 @@ impl<'a> Schema<&'a mut Fork> {
             Wallet::new(key, name, INITIAL_BALANCE, history.len(), &history_hash)
         };
         self.wallets_mut().put(key, wallet);
+    }
+
+    /// Put new pending MultisignatureTransfer into wallet.
+    pub fn put_transfer_multisig(
+        &mut self,
+        wallet: Wallet,
+        transfer_multisig: PendingTransferMultisig,
+    ) {
+        let wallet = {
+            let mut history = self.wallet_history_mut(&wallet.pub_key);
+            history.push(transfer_multisig.tx_hash);
+            let history_hash = history.merkle_root();
+            wallet.put_multisig_transfer(transfer_multisig, history_hash)
+        };
+
+        let pub_key = wallet.pub_key;
+
+        self.wallets_mut().put(&pub_key, wallet);
+    }
+
+    /// Complete PendingTransferMultisig.
+    pub fn complete_transfer_multisig(
+        &mut self,
+        wallet: Wallet,
+        amount: u64,
+        transfer_multisig: PendingTransferMultisig,
+        transaction: Hash,
+    ) {
+        let wallet = {
+            let mut history = self.wallet_history_mut(&wallet.pub_key);
+            history.push(transaction);
+            let history_hash = history.merkle_root();
+
+            let balance = wallet.balance;
+
+            wallet.complete_multisig_transfer(transfer_multisig, balance + amount, history_hash)
+        };
+
+        let pub_key = wallet.pub_key;
+
+        self.wallets_mut().put(&pub_key, wallet);
+    }
+
+    /// Update PendingTransferMultisig.
+    pub fn update_transfer_multisig(
+        &mut self,
+        wallet: Wallet,
+        transfer_multisig: PendingTransferMultisig,
+        transaction: Hash,
+    ) {
+        let wallet = {
+            let mut history = self.wallet_history_mut(&wallet.pub_key);
+            history.push(transaction);
+            let history_hash = history.merkle_root();
+
+            wallet.update_multisig_transfer(transfer_multisig, history_hash)
+        };
+
+        let pub_key = wallet.pub_key;
+
+        self.wallets_mut().put(&pub_key, wallet);
     }
 }
