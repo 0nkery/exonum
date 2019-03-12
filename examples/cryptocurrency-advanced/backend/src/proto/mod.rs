@@ -18,8 +18,8 @@
 #![allow(renamed_and_removed_lints)]
 
 pub use self::cryptocurrency::{
-    ApproveTransferMultisig, CreateWallet, Issue, PendingTransferMultisig, RejectTransferMultisig,
-    Transfer, TransferMultisig, Wallet,
+    ApproveTransferMultisig, CreateWallet, Issue, MultisignatureTransfer,
+    MultisignatureTransfer_State, RejectTransferMultisig, Transfer, TransferMultisig, Wallet,
 };
 
 include!(concat!(env!("OUT_DIR"), "/protobuf_mod.rs"));

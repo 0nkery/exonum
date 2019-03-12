@@ -27,7 +27,7 @@ use exonum::{
 };
 
 use super::proto;
-use crate::{schema::Schema, wallet::PendingTransferMultisig, CRYPTOCURRENCY_SERVICE_ID};
+use crate::{schema::Schema, CRYPTOCURRENCY_SERVICE_ID};
 
 /// Error codes emitted by wallet transactions during execution.
 #[derive(Debug, Fail)]
@@ -98,6 +98,12 @@ pub enum Error {
     /// Can be emitted by `ApproveTransferMultisig`.
     #[fail(display = "Approver is not on approvers list")]
     ApproverIsNotOnApproversList = 10,
+
+    /// Transfer is rejected.
+    ///
+    /// Can be emitted by `ApproveTransferMultisig`.
+    #[fail(display = "Transfer is rejected")]
+    TransferIsRejected = 11,
 }
 
 impl From<Error> for ExecutionError {
@@ -279,8 +285,8 @@ impl Transaction for Transfer {
             Err(Error::InsufficientCurrencyAmount)?
         }
 
-        schema.decrease_wallet_balance(sender, amount, &hash);
-        schema.increase_wallet_balance(receiver, amount, &hash);
+        schema.update_wallet(sender.decrease_balance(amount), hash);
+        schema.update_wallet(receiver.increase_balance(amount), hash);
 
         Ok(())
     }
@@ -294,8 +300,7 @@ impl Transaction for Issue {
         let mut schema = Schema::new(context.fork());
 
         if let Some(wallet) = schema.wallet(pub_key) {
-            let amount = self.amount;
-            schema.increase_wallet_balance(wallet, amount, &hash);
+            schema.update_wallet(wallet.increase_balance(self.amount), hash);
             Ok(())
         } else {
             Err(Error::ReceiverNotFound)?
@@ -338,7 +343,7 @@ impl Transaction for TransferMultisig {
         }
 
         let sender = schema.wallet(&from).ok_or(Error::SenderNotFound)?;
-        let receiver = schema.wallet(&to).ok_or(Error::ReceiverNotFound)?;
+        let _receiver = schema.wallet(&to).ok_or(Error::ReceiverNotFound)?;
 
         if sender.balance < amount {
             return Err(Error::InsufficientCurrencyAmount.into());
@@ -354,10 +359,10 @@ impl Transaction for TransferMultisig {
             return Err(Error::ApproversListIsTooLarge.into());
         }
 
-        let pending_transfer_multisig = PendingTransferMultisig::new(hash);
+        let sender = sender.decrease_balance(amount);
 
-        schema.decrease_wallet_balance(sender, amount, &hash);
-        schema.put_transfer_multisig(receiver, pending_transfer_multisig);
+        schema.update_wallet(sender, hash);
+        schema.create_transfer_multisig(hash);
 
         Ok(())
     }
@@ -371,7 +376,7 @@ impl Transaction for ApproveTransferMultisig {
             let blockchain = blockchain::Schema::new(context.fork());
 
             // Proof (in a sense) that tx was successful.
-            let _tx_was_successful = blockchain
+            blockchain
                 .transaction_results()
                 .get(&self.tx_hash)
                 .ok_or(Error::TransactionDoesNotExist)?
@@ -395,16 +400,7 @@ impl Transaction for ApproveTransferMultisig {
         };
 
         let approver = context.author();
-
-        // Check if approver is eligible to approve the transfer.
-        original_transfer
-            .approvers
-            .iter()
-            .find(|a| **a == approver)
-            .ok_or(Error::ApproverIsNotOnApproversList)?;
-
         let tx_hash = context.tx_hash();
-
         let mut schema = Schema::new(context.fork());
 
         let wallet = schema
@@ -412,27 +408,24 @@ impl Transaction for ApproveTransferMultisig {
             // Highly unlikely (read as impossible) scenario but...
             .ok_or(Error::ReceiverNotFound)?;
 
-        let transfer_in_question = wallet
-            .pending_multisig_transfers
-            .iter()
-            .find(|t| t.tx_hash == self.tx_hash)
-            // The transfer has been processed already or
-            // some logic bug has happened earlier.
-            .ok_or(Error::TransactionDoesNotExist)?
-            .clone();
+        let transfer_in_question = schema
+            .multisig_transfer(self.tx_hash)
+            .ok_or(Error::TransactionDoesNotExist)?;
 
-        let approved_transfer = transfer_in_question.approve(approver);
-
-        if approved_transfer.is_complete(&original_transfer.approvers) {
-            schema.complete_transfer_multisig(
-                wallet,
-                original_transfer.amount,
-                approved_transfer,
-                tx_hash,
-            );
-        } else {
-            schema.update_transfer_multisig(wallet, approved_transfer, tx_hash);
+        if transfer_in_question.is_rejected() {
+            return Err(Error::TransferIsRejected.into());
         }
+
+        let approved_transfer = transfer_in_question
+            .approve(approver, &original_transfer.approvers)
+            .map_err(|_err| Error::ApproverIsNotOnApproversList)?;
+
+        if approved_transfer.is_done() {
+            let wallet = wallet.increase_balance(original_transfer.amount);
+            schema.update_wallet(wallet, tx_hash);
+        }
+
+        schema.update_transfer_multisig(self.tx_hash, approved_transfer);
 
         Ok(())
     }
@@ -446,7 +439,7 @@ impl Transaction for RejectTransferMultisig {
             let blockchain = blockchain::Schema::new(context.fork());
 
             // Proof (in a sense) that tx was successful.
-            let _tx_was_successful = blockchain
+            blockchain
                 .transaction_results()
                 .get(&self.tx_hash)
                 .ok_or(Error::TransactionDoesNotExist)?
@@ -469,41 +462,26 @@ impl Transaction for RejectTransferMultisig {
             }
         };
 
-        let approver = context.author();
-
-        // Check if approver is eligible to approve the transfer.
-        original_transfer
-            .approvers
-            .iter()
-            .find(|a| **a == approver)
-            .ok_or(Error::ApproverIsNotOnApproversList)?;
-
+        let rejecter = context.author();
         let tx_hash = context.tx_hash();
-
         let mut schema = Schema::new(context.fork());
 
         let sender = schema
             .wallet(&original_author)
             .ok_or(Error::SenderNotFound)?;
 
-        let receiver = schema
-            .wallet(&original_transfer.to)
-            // Highly unlikely (read as impossible) scenario but...
-            .ok_or(Error::ReceiverNotFound)?;
+        let transfer_in_question = schema
+            .multisig_transfer(self.tx_hash)
+            .ok_or(Error::TransactionDoesNotExist)?;
 
-        let transfer_in_question = receiver
-            .pending_multisig_transfers
-            .iter()
-            .find(|t| t.tx_hash == self.tx_hash)
-            // The transfer has been processed already or
-            // some logic bug has happened earlier.
-            .ok_or(Error::TransactionDoesNotExist)?
-            .clone();
+        let rejected_transfer = transfer_in_question
+            .reject(rejecter, &original_transfer.approvers)
+            .map_err(|_err| Error::ApproverIsNotOnApproversList)?;
 
-        // If all is well then return money to sender and remove pending transfer
-        // from receiver.
-        schema.increase_wallet_balance(sender, original_transfer.amount, &tx_hash);
-        schema.cancel_transfer_multisig(receiver, transfer_in_question, tx_hash);
+        let sender = sender.increase_balance(original_transfer.amount);
+        schema.update_wallet(sender, tx_hash);
+
+        schema.update_transfer_multisig(self.tx_hash, rejected_transfer);
 
         Ok(())
     }

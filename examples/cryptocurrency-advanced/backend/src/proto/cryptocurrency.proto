@@ -66,10 +66,15 @@ message CreateWallet {
 }
 
 // MultisignatureTransfer information stored in the database.
-message PendingTransferMultisig {
-  exonum.Hash tx_hash = 1;
+message MultisignatureTransfer {
   // Public keys of approvers approved this transfer.
-  repeated exonum.PublicKey approved_by = 2;
+  repeated exonum.PublicKey approved_by = 1;
+  enum State {
+    IN_PROCESS = 0;
+    REJECTED = 1;
+    DONE = 2;
+  }
+  State state = 2;
 }
 
 // Wallet information stored in the database.
@@ -84,6 +89,4 @@ message Wallet {
   uint64 history_len = 4;
   // `Hash` of the transactions history.
   exonum.Hash history_hash = 5;
-  // List of pending multisignature transfers.
-  repeated PendingTransferMultisig pending_multisig_transfers = 6;
 }

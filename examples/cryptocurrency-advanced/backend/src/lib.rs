@@ -31,6 +31,7 @@ extern crate serde_derive;
 pub use crate::schema::Schema;
 
 pub mod api;
+pub mod multisig_transfer;
 pub mod proto;
 pub mod schema;
 pub mod transactions;

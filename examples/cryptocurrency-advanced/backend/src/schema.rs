@@ -19,10 +19,11 @@ use exonum::{
     storage::{Fork, ProofListIndex, ProofMapIndex, Snapshot},
 };
 
-use crate::{
-    wallet::{PendingTransferMultisig, Wallet},
-    INITIAL_BALANCE,
-};
+use crate::{multisig_transfer::MultisignatureTransfer, wallet::Wallet, INITIAL_BALANCE};
+
+const WALLET_TABLE: &str = "cryptocurrency.wallets";
+const WALLET_HISTORY_FAMILY: &str = "cryptocurrency.wallet_history";
+const MULTISIG_TRANSFER_TABLE: &str = "cryptocurrency.multisig_transfers";
 
 /// Database schema for the cryptocurrency.
 #[derive(Debug)]
@@ -47,12 +48,12 @@ where
 
     /// Returns `ProofMapIndex` with wallets.
     pub fn wallets(&self) -> ProofMapIndex<&T, PublicKey, Wallet> {
-        ProofMapIndex::new("cryptocurrency.wallets", &self.view)
+        ProofMapIndex::new(WALLET_TABLE, &self.view)
     }
 
     /// Returns history of the wallet with the given public key.
     pub fn wallet_history(&self, public_key: &PublicKey) -> ProofListIndex<&T, Hash> {
-        ProofListIndex::new_in_family("cryptocurrency.wallet_history", public_key, &self.view)
+        ProofListIndex::new_in_family(WALLET_HISTORY_FAMILY, public_key, &self.view)
     }
 
     /// Returns wallet for the given public key.
@@ -60,9 +61,22 @@ where
         self.wallets().get(pub_key)
     }
 
+    /// Returns `ProofMapIndex` with multisignature transfers.
+    pub fn multisig_transfers(&self) -> ProofMapIndex<&T, Hash, MultisignatureTransfer> {
+        ProofMapIndex::new(MULTISIG_TRANSFER_TABLE, &self.view)
+    }
+
+    /// Returns multisignature transfer for the given tx hash.
+    pub fn multisig_transfer(&self, tx_hash: Hash) -> Option<MultisignatureTransfer> {
+        self.multisig_transfers().get(&tx_hash)
+    }
+
     /// Returns the state hash of cryptocurrency service.
     pub fn state_hash(&self) -> Vec<Hash> {
-        vec![self.wallets().merkle_root()]
+        vec![
+            self.wallets().merkle_root(),
+            self.multisig_transfers().merkle_root(),
+        ]
     }
 }
 
@@ -70,7 +84,7 @@ where
 impl<'a> Schema<&'a mut Fork> {
     /// Returns mutable `ProofMapIndex` with wallets.
     pub fn wallets_mut(&mut self) -> ProofMapIndex<&mut Fork, PublicKey, Wallet> {
-        ProofMapIndex::new("cryptocurrency.wallets", &mut self.view)
+        ProofMapIndex::new(WALLET_TABLE, &mut self.view)
     }
 
     /// Returns history for the wallet by the given public key.
@@ -78,35 +92,7 @@ impl<'a> Schema<&'a mut Fork> {
         &mut self,
         public_key: &PublicKey,
     ) -> ProofListIndex<&mut Fork, Hash> {
-        ProofListIndex::new_in_family("cryptocurrency.wallet_history", public_key, &mut self.view)
-    }
-
-    /// Increase balance of the wallet and append new record to its history.
-    ///
-    /// Panics if there is no wallet with given public key.
-    pub fn increase_wallet_balance(&mut self, wallet: Wallet, amount: u64, transaction: &Hash) {
-        let wallet = {
-            let mut history = self.wallet_history_mut(&wallet.pub_key);
-            history.push(*transaction);
-            let history_hash = history.merkle_root();
-            let balance = wallet.balance;
-            wallet.set_balance(balance + amount, history_hash)
-        };
-        self.wallets_mut().put(&wallet.pub_key, wallet.clone());
-    }
-
-    /// Decrease balance of the wallet and append new record to its history.
-    ///
-    /// Panics if there is no wallet with given public key.
-    pub fn decrease_wallet_balance(&mut self, wallet: Wallet, amount: u64, transaction: &Hash) {
-        let wallet = {
-            let mut history = self.wallet_history_mut(&wallet.pub_key);
-            history.push(*transaction);
-            let history_hash = history.merkle_root();
-            let balance = wallet.balance;
-            wallet.set_balance(balance - amount, history_hash)
-        };
-        self.wallets_mut().put(&wallet.pub_key, wallet.clone());
+        ProofListIndex::new_in_family(WALLET_HISTORY_FAMILY, public_key, &mut self.view)
     }
 
     /// Create new wallet and append first record to its history.
@@ -120,84 +106,39 @@ impl<'a> Schema<&'a mut Fork> {
         self.wallets_mut().put(key, wallet);
     }
 
-    /// Put new pending MultisignatureTransfer into wallet.
-    pub fn put_transfer_multisig(
-        &mut self,
-        wallet: Wallet,
-        transfer_multisig: PendingTransferMultisig,
-    ) {
-        let wallet = {
-            let mut history = self.wallet_history_mut(&wallet.pub_key);
-            history.push(transfer_multisig.tx_hash);
-            let history_hash = history.merkle_root();
-            wallet.put_multisig_transfer(transfer_multisig, history_hash)
-        };
-
-        let pub_key = wallet.pub_key;
-
-        self.wallets_mut().put(&pub_key, wallet);
-    }
-
-    /// Complete PendingTransferMultisig.
-    pub fn complete_transfer_multisig(
-        &mut self,
-        wallet: Wallet,
-        amount: u64,
-        transfer_multisig: PendingTransferMultisig,
-        transaction: Hash,
-    ) {
+    /// Update existing wallet after transaction.
+    pub fn update_wallet(&mut self, wallet: Wallet, transaction: Hash) {
         let wallet = {
             let mut history = self.wallet_history_mut(&wallet.pub_key);
             history.push(transaction);
             let history_hash = history.merkle_root();
 
-            let balance = wallet.balance;
-
-            wallet.complete_multisig_transfer(transfer_multisig, balance + amount, history_hash)
+            wallet.update_history_hash(history_hash)
         };
 
-        let pub_key = wallet.pub_key;
-
-        self.wallets_mut().put(&pub_key, wallet);
+        let key = wallet.pub_key;
+        self.wallets_mut().put(&key, wallet);
     }
 
-    /// Update PendingTransferMultisig.
+    /// Returns mutable `ProofMapIndex` with multisignature transactions.
+    pub fn multisig_transfers_mut(
+        &mut self,
+    ) -> ProofMapIndex<&mut Fork, Hash, MultisignatureTransfer> {
+        ProofMapIndex::new(MULTISIG_TRANSFER_TABLE, &mut self.view)
+    }
+
+    /// Put new pending MultisignatureTransfer into wallet.
+    pub fn create_transfer_multisig(&mut self, transaction: Hash) {
+        self.multisig_transfers_mut()
+            .put(&transaction, MultisignatureTransfer::new());
+    }
+
+    /// Updates multisignature transfer.
     pub fn update_transfer_multisig(
         &mut self,
-        wallet: Wallet,
-        transfer_multisig: PendingTransferMultisig,
-        transaction: Hash,
+        transfer_tx: Hash,
+        transfer: MultisignatureTransfer,
     ) {
-        let wallet = {
-            let mut history = self.wallet_history_mut(&wallet.pub_key);
-            history.push(transaction);
-            let history_hash = history.merkle_root();
-
-            wallet.update_multisig_transfer(transfer_multisig, history_hash)
-        };
-
-        let pub_key = wallet.pub_key;
-
-        self.wallets_mut().put(&pub_key, wallet);
-    }
-
-    /// Cancel PendingTransferMultisig.
-    pub fn cancel_transfer_multisig(
-        &mut self,
-        wallet: Wallet,
-        transfer_multisig: PendingTransferMultisig,
-        transaction: Hash,
-    ) {
-        let wallet = {
-            let mut history = self.wallet_history_mut(&wallet.pub_key);
-            history.push(transaction);
-            let history_hash = history.merkle_root();
-
-            wallet.remove_multisig_transfer(transfer_multisig.tx_hash, history_hash)
-        };
-
-        let pub_key = wallet.pub_key;
-
-        self.wallets_mut().put(&pub_key, wallet);
+        self.multisig_transfers_mut().put(&transfer_tx, transfer);
     }
 }
